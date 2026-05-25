@@ -1,16 +1,4 @@
-"""
-train.py — GPU-optimized CNN training for optimizer comparison.
-
-Architecture:
-  MNIST   : CNN_MNIST  (2 conv blocks)
-  CIFAR-10: CNN_CIFAR  (3 conv blocks)
-
-Automatically uses CUDA if available (Titan XP), falls back to CPU.
-Uses multiple DataLoader workers and pin_memory for fast GPU data transfer.
-
-Usage:
-  python3 train.py --datasets mnist cifar10 --batch_sizes 32 128 512 1024 --epochs 20 --seeds 0 1 2
-"""
+#Trains CNNs on MNIST and CIFAR-10 with Adam, SignSGD, Lion, and AdaHessian optimizers.
 
 import torch
 import torch.nn as nn
@@ -18,9 +6,6 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import json, os, argparse, time
 from optimizers import SignSGD, Lion, AdaHessian
-
-
-# ─── Device ──────────────────────────────────────────────────────────────────
 
 def get_device():
     if torch.cuda.is_available():
@@ -32,15 +17,9 @@ def get_device():
     return device
 
 
-# ─── CNN Models ───────────────────────────────────────────────────────────────
+# CNN Models for MNIST and CIFAR-10
 
 class CNN_MNIST(nn.Module):
-    """
-    CNN for MNIST (1×28×28).
-    Block 1: Conv(1→32,3×3) → BN → ReLU → MaxPool  →  14×14
-    Block 2: Conv(32→64,3×3) → BN → ReLU → MaxPool →   7×7
-    FC: 64*7*7=3136 → 128 → 10
-    """
     def __init__(self):
         super().__init__()
         self.features = nn.Sequential(
@@ -60,13 +39,6 @@ class CNN_MNIST(nn.Module):
 
 
 class CNN_CIFAR(nn.Module):
-    """
-    CNN for CIFAR-10 (3×32×32).
-    Block 1: Conv(3→32,3×3)   → BN → ReLU → MaxPool  → 16×16
-    Block 2: Conv(32→64,3×3)  → BN → ReLU → MaxPool  →  8×8
-    Block 3: Conv(64→128,3×3) → BN → ReLU → MaxPool  →  4×4
-    FC: 128*4*4=2048 → 256 → Dropout(0.3) → 10
-    """
     def __init__(self):
         super().__init__()
         self.features = nn.Sequential(
@@ -89,9 +61,8 @@ def build_model(dataset):
     return CNN_MNIST() if dataset.lower() == "mnist" else CNN_CIFAR()
 
 
-# ─── Data ────────────────────────────────────────────────────────────────────
+# Data loading
 
-# 2 workers avoids "too many open files" on systems with low ulimit
 NUM_WORKERS = 2
 
 def get_loaders(dataset, batch_size, data_dir="./data"):
@@ -137,7 +108,7 @@ def get_loaders(dataset, batch_size, data_dir="./data"):
     return train_loader, test_loader
 
 
-# ─── Evaluation ──────────────────────────────────────────────────────────────
+# Evaluation and training loop
 
 @torch.no_grad()
 def evaluate(model, loader, criterion, device):
@@ -153,7 +124,7 @@ def evaluate(model, loader, criterion, device):
     return total_loss / n, correct / n
 
 
-# ─── Optimizer factory ────────────────────────────────────────────────────────
+# Optimizers
 
 DEFAULT_LRS = {
     "mnist":   {"adam": 1e-3, "signsgd": 1e-3, "lion": 1e-4, "adahessian": 0.1},
@@ -169,8 +140,7 @@ def build_optimizer(name, params, lr, weight_decay=1e-4):
     else: raise ValueError(f"Unknown optimizer: {name}")
 
 
-# ─── Single run ───────────────────────────────────────────────────────────────
-
+# Training for one run
 def train_one_run(opt_name, lr, epochs, batch_size, seed, device, data_dir, dataset):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -226,8 +196,6 @@ def train_one_run(opt_name, lr, epochs, batch_size, seed, device, data_dir, data
     return history
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--optimizers",  nargs="+",
@@ -256,7 +224,7 @@ def main():
                     all_results.append(hist)
 
     out_path = os.path.join(args.out_dir, "results.json")
-    # Append to existing results if file exists, so experiments can be run separately
+    # Append to existing results if file exists
     if os.path.exists(out_path):
         with open(out_path) as f:
             existing = json.load(f)
@@ -265,8 +233,8 @@ def main():
 
     with open(out_path, "w") as f:
         json.dump(all_results, f, indent=2)
-    print(f"\n✓ Saved {len(all_results)} total runs → {out_path}")
-    print("  Now run: python3 plot_results.py")
+    print(f"\n Saved {len(all_results)} total runs to {out_path}")
+    print("Now run: python3 plot_results.py")
 
 
 if __name__ == "__main__":

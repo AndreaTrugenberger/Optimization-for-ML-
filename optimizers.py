@@ -1,28 +1,15 @@
 """
-optimizers.py — Clean implementations of SignSGD, Lion, and AdaHessian.
-Adam is provided by PyTorch; we import it from torch.optim.
+Implementations of SignSGD, Lion, and AdaHessian.
+We use Adam implementation from PyTorch.
 """
 
 import torch
 from torch.optim import Optimizer
 
 
-# ─── SignSGD (signum variant from the paper) ──────────────────────────────────
-
 class SignSGD(Optimizer):
-    """
-    SignSGD with momentum — exactly the 'signum' algorithm from
-    Bernstein et al. (2018) "signSGD: Compressed Optimisation for Non-Convex
-    Problems" (https://arxiv.org/abs/1802.04434, Algorithm 2):
-
-        m_{k+1} ← β m_k + (1 - β) g_k         (EMA momentum)
-        θ_{k+1} ← θ_k - η · sign(m_{k+1})     (sign update)
-
-    Note the EMA momentum: the gradient enters with weight (1 - β), so β and
-    (1 - β) sum to 1. This is the convex-combination form from the paper,
-    not the classical heavy-ball form where the gradient is added at full
-    weight.
-    """
+    # SignSGD with momentum, Bernstein et al. (2018) (https://arxiv.org/abs/1802.04434)
+    
     def __init__(self, params, lr=1e-3, momentum=0.9, weight_decay=0.0):
         defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay)
         super().__init__(params, defaults)
@@ -60,20 +47,10 @@ class SignSGD(Optimizer):
         return loss
 
 
-# ─── Lion ─────────────────────────────────────────────────────────────────────
 
 class Lion(Optimizer):
-    """
-    Lion (EvoLved Sign Momentum) — Chen et al. (2023)
-    "Symbolic Discovery of Optimization Algorithms"
-    (https://arxiv.org/abs/2302.06675).
+    # Lion, Chen et al. (2023) (https://arxiv.org/abs/2302.06675).
 
-    Distinct from SignSGD in two ways:
-      (1) The parameter update uses a normalised combination of momentum
-          and current gradient (weights β1 and 1-β1 sum to 1).
-      (2) The momentum buffer is updated separately with DIFFERENT weights
-          (β2 and 1-β2), decoupling memory evolution from update direction.
-    """
     def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.0):
         defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay)
         super().__init__(params, defaults)
@@ -116,21 +93,9 @@ class Lion(Optimizer):
         return loss
 
 
-# ─── AdaHessian ───────────────────────────────────────────────────────────────
-
 class AdaHessian(Optimizer):
-    """
-    AdaHessian — Yao et al. (2021)
-    "ADAHESSIAN: An Adaptive Second Order Optimizer for ML"
-    (https://arxiv.org/abs/2006.00719).
+    # AdaHessian, Yao et al. (2021) (https://arxiv.org/abs/2006.00719).
 
-    Approximates the diagonal of the Hessian via Hutchinson's trick:
-    a single Rademacher vector z is sampled per step, and the diagonal is
-    estimated as diag(H) ≈ z ⊙ (Hz). Uses this as a pre-conditioner for
-    coordinate-wise adaptive learning rates.
-
-    NOTE: requires loss.backward(create_graph=True) in the training loop.
-    """
     def __init__(self, params, lr=0.1, betas=(0.9, 0.999), eps=1e-4,
                  weight_decay=0.0, hessian_power=1.0):
         defaults = dict(lr=lr, betas=betas, eps=eps,
