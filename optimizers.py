@@ -7,14 +7,21 @@ import torch
 from torch.optim import Optimizer
 
 
-# ─── SignSGD ──────────────────────────────────────────────────────────────────
+# ─── SignSGD (signum variant from the paper) ──────────────────────────────────
 
 class SignSGD(Optimizer):
     """
-    signSGD: uses only the *sign* of the gradient for each coordinate.
-    Each coordinate gets ±lr, completely ignoring gradient magnitude.
-    Ref: Bernstein et al. (2018) "signSGD: Compressed Optimisation for Non-Convex Problems"
-         https://arxiv.org/abs/1802.04434
+    SignSGD with momentum — exactly the 'signum' algorithm from
+    Bernstein et al. (2018) "signSGD: Compressed Optimisation for Non-Convex
+    Problems" (https://arxiv.org/abs/1802.04434, Algorithm 2):
+
+        m_{k+1} ← β m_k + (1 - β) g_k         (EMA momentum)
+        θ_{k+1} ← θ_k - η · sign(m_{k+1})     (sign update)
+
+    Note the EMA momentum: the gradient enters with weight (1 - β), so β and
+    (1 - β) sum to 1. This is the convex-combination form from the paper,
+    not the classical heavy-ball form where the gradient is added at full
+    weight.
     """
     def __init__(self, params, lr=1e-3, momentum=0.9, weight_decay=0.0):
         defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay)
@@ -29,7 +36,7 @@ class SignSGD(Optimizer):
 
         for group in self.param_groups:
             lr           = group["lr"]
-            momentum     = group["momentum"]
+            beta         = group["momentum"]
             weight_decay = group["weight_decay"]
 
             for p in group["params"]:
@@ -45,8 +52,10 @@ class SignSGD(Optimizer):
                     state["momentum_buffer"] = torch.zeros_like(p)
 
                 buf = state["momentum_buffer"]
-                buf.mul_(momentum).add_(g)          # heavy-ball momentum on gradient
-                p.add_(buf.sign(), alpha=-lr)        # step = -lr * sign(momentum_buffer)
+                # EMA momentum update:   m ← β·m + (1 - β)·g
+                buf.mul_(beta).add_(g, alpha=1 - beta)
+                # Sign update:           θ ← θ - η · sign(m)
+                p.add_(buf.sign(), alpha=-lr)
 
         return loss
 
@@ -55,10 +64,15 @@ class SignSGD(Optimizer):
 
 class Lion(Optimizer):
     """
-    Lion (EvoLved Sign Momentum): uses sign of an EMA of gradients.
-    More memory-efficient than Adam; works well with larger batch sizes.
-    Ref: Chen et al. (2023) "Symbolic Discovery of Optimization Algorithms"
-         https://arxiv.org/abs/2302.06675
+    Lion (EvoLved Sign Momentum) — Chen et al. (2023)
+    "Symbolic Discovery of Optimization Algorithms"
+    (https://arxiv.org/abs/2302.06675).
+
+    Distinct from SignSGD in two ways:
+      (1) The parameter update uses a normalised combination of momentum
+          and current gradient (weights β1 and 1-β1 sum to 1).
+      (2) The momentum buffer is updated separately with DIFFERENT weights
+          (β2 and 1-β2), decoupling memory evolution from update direction.
     """
     def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.0):
         defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay)
@@ -87,16 +101,16 @@ class Lion(Optimizer):
 
                 m = state["exp_avg"]
 
-                # update: sign of interpolation between EMA and current gradient
+                # Update direction: sign of β1·m + (1-β1)·g
                 update = (beta1 * m + (1 - beta1) * g).sign_()
 
-                # weight decay applied directly to parameter
+                # Decoupled weight decay
                 if weight_decay != 0:
                     p.mul_(1 - lr * weight_decay)
 
                 p.add_(update, alpha=-lr)
 
-                # update EMA (not the same as the update above!)
+                # Momentum update uses DIFFERENT weights (β2, 1-β2)
                 m.mul_(beta2).add_(g, alpha=1 - beta2)
 
         return loss
@@ -106,42 +120,36 @@ class Lion(Optimizer):
 
 class AdaHessian(Optimizer):
     """
-    AdaHessian: diagonal Hessian estimated via Hutchinson's trick (random Rademacher vectors).
-    Uses Hessian curvature info per coordinate to set adaptive learning rates,
-    similar to Adagrad/Adam but with second-order information.
-    Ref: Yao et al. (2021) "ADAHESSIAN: An Adaptive Second Order Optimizer for ML"
-         https://arxiv.org/abs/2006.00719
+    AdaHessian — Yao et al. (2021)
+    "ADAHESSIAN: An Adaptive Second Order Optimizer for ML"
+    (https://arxiv.org/abs/2006.00719).
+
+    Approximates the diagonal of the Hessian via Hutchinson's trick:
+    a single Rademacher vector z is sampled per step, and the diagonal is
+    estimated as diag(H) ≈ z ⊙ (Hz). Uses this as a pre-conditioner for
+    coordinate-wise adaptive learning rates.
 
     NOTE: requires loss.backward(create_graph=True) in the training loop.
     """
     def __init__(self, params, lr=0.1, betas=(0.9, 0.999), eps=1e-4,
-                 weight_decay=0.0, hessian_power=1.0, spatial_average_blocksize=1):
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay,
-                        hessian_power=hessian_power,
-                        spatial_average_blocksize=spatial_average_blocksize)
+                 weight_decay=0.0, hessian_power=1.0):
+        defaults = dict(lr=lr, betas=betas, eps=eps,
+                        weight_decay=weight_decay, hessian_power=hessian_power)
         super().__init__(params, defaults)
 
     def _get_hessian_diag(self, params_with_grad):
         """
-        Hutchinson estimator of the diagonal of the Hessian.
-        Draws one Rademacher vector z ∈ {±1}^d and computes
-        diag(H) ≈ z ⊙ (H z),  where H z = ∇(∇L · z).
+        Hutchinson estimator of the Hessian diagonal:
+            diag(H) ≈ z ⊙ (Hz),  z ~ Rademacher(±1)
+        Computed using a single random sample per step.
         """
-        # Rademacher vector
         zs = [torch.randint_like(p, high=2).float() * 2 - 1
               for p in params_with_grad]
-
-        # Hessian-vector product: grad of (grad · z) w.r.t. params
         grads = [p.grad for p in params_with_grad]
         hvps  = torch.autograd.grad(
-            outputs=grads,
-            inputs=params_with_grad,
-            grad_outputs=zs,
-            only_inputs=True,
-            retain_graph=False,
+            outputs=grads, inputs=params_with_grad,
+            grad_outputs=zs, only_inputs=True, retain_graph=False,
         )
-
-        # Hutchinson estimate: element-wise z ⊙ Hv
         return [z * hvp for z, hvp in zip(zs, hvps)]
 
     @torch.no_grad()
@@ -151,7 +159,6 @@ class AdaHessian(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
-        # Collect params that have gradients (need enable_grad for hvp)
         params_with_grad = []
         for group in self.param_groups:
             for p in group["params"]:
@@ -161,11 +168,9 @@ class AdaHessian(Optimizer):
         if not params_with_grad:
             return loss
 
-        # Hessian diagonal (runs autograd, so do it before @no_grad context kills grads)
         with torch.enable_grad():
             hess_diags = self._get_hessian_diag(params_with_grad)
 
-        # Apply updates
         p_idx = 0
         for group in self.param_groups:
             lr           = group["lr"]
@@ -179,7 +184,7 @@ class AdaHessian(Optimizer):
                     continue
 
                 g  = p.grad
-                hd = hess_diags[p_idx].abs()     # absolute value of Hessian diagonal
+                hd = hess_diags[p_idx].abs()
                 p_idx += 1
 
                 if weight_decay != 0:
@@ -187,19 +192,18 @@ class AdaHessian(Optimizer):
 
                 state = self.state[p]
                 if len(state) == 0:
-                    state["step"]      = 0
-                    state["exp_avg"]   = torch.zeros_like(p)
-                    state["exp_hess"]  = torch.zeros_like(p)   # EMA of |hessian diag|
+                    state["step"]     = 0
+                    state["exp_avg"]  = torch.zeros_like(p)
+                    state["exp_hess"] = torch.zeros_like(p)
 
                 state["step"] += 1
-                m  = state["exp_avg"]
-                v  = state["exp_hess"]
-                t  = state["step"]
+                m = state["exp_avg"]
+                v = state["exp_hess"]
+                t = state["step"]
 
                 m.mul_(beta1).add_(g,  alpha=1 - beta1)
                 v.mul_(beta2).add_(hd, alpha=1 - beta2)
 
-                # Bias correction
                 m_hat = m / (1 - beta1 ** t)
                 v_hat = v / (1 - beta2 ** t)
 
