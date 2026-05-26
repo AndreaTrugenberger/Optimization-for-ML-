@@ -1,4 +1,4 @@
-#Trains CNNs on MNIST and CIFAR-10 with Adam, SignSGD, Lion, and AdaHessian optimizers.
+# Trains CNNs on MNIST and CIFAR-10 with Adam, SignSGD, Lion, and AdaHessian optimizers.
 
 import torch
 import torch.nn as nn
@@ -10,10 +10,10 @@ from optimizers import SignSGD, Lion, AdaHessian
 def get_device():
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        print(f"✓ Using GPU: {torch.cuda.get_device_name(0)}")
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
     else:
         device = torch.device("cpu")
-        print("⚠  CUDA not available, using CPU.")
+        print("CUDA not available, using CPU.")
     return device
 
 
@@ -67,7 +67,7 @@ NUM_WORKERS = 2
 
 def get_loaders(dataset, batch_size, data_dir="./data"):
     dataset = dataset.lower()
-    pin = torch.cuda.is_available()   # pin_memory speeds up CPU→GPU transfer
+    pin = torch.cuda.is_available()   # pin_memory speeds up CPU to GPU transfer
 
     if dataset == "mnist":
         tfm = transforms.Compose([
@@ -167,7 +167,7 @@ def train_one_run(opt_name, lr, epochs, batch_size, seed, device, data_dir, data
         for x, y in train_loader:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
-            optimizer.zero_grad(set_to_none=True)   # faster than zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             out  = model(x)
             loss = criterion(out, y)
